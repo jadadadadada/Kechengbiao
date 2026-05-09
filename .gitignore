@@ -1,0 +1,25 @@
+# Gradle / Android build outputs
+.gradle/
+.kotlin/
+build/
+**/build/
+
+# Local machine config
+local.properties
+
+# IDE files
+.idea/
+*.iml
+
+# Packaged SDK/tool downloads
+cmdline-tools.zip
+
+# Local assistant/tooling state
+.claude/
+.github/java-upgrade/
+CLAUDE.md
+claude_code_schedule_tasks.md
+
+# OS files
+.DS_Store
+Thumbs.db
