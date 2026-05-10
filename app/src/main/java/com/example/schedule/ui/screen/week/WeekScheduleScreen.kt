@@ -50,7 +50,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -105,8 +107,10 @@ fun WeekScheduleScreen(
     var showWeekPicker by remember { mutableStateOf(false) }
     var showMainMenu by remember { mutableStateOf(false) }
     var showMoreMenu by remember { mutableStateOf(false) }
-    val weekStartDate = uiState.semesterStartDate.plusWeeks((uiState.displayedWeek - 1).toLong())
-    val dayDates = (0..6).map { weekStartDate.plusDays(it.toLong()) }
+    val dayDates = remember(uiState.semesterStartDate, uiState.displayedWeek) {
+        val weekStartDate = uiState.semesterStartDate.plusWeeks((uiState.displayedWeek - 1).toLong())
+        (0..6).map { weekStartDate.plusDays(it.toLong()) }
+    }
     val todayDate = LocalDate.now()
     val weekLabel = if (uiState.displayedWeek == uiState.currentWeek) {
         "本周 · 第${uiState.displayedWeek}周"
@@ -238,18 +242,20 @@ fun WeekScheduleScreen(
                 .verticalScroll(rememberScrollState())
         ) {
             // 一屏保持 5 个日期列的舒适密度，周六周日通过横向滑动查看。
-            val dayColumnWidth = (maxWidth - TIME_COLUMN_WIDTH) / 5
-            val contentWidth = TIME_COLUMN_WIDTH + dayColumnWidth * 7
-            val gridHeight = SECTION_HEIGHT * 12
-            val visibleCourses = uiState.courseList.filter { course ->
-                course.isEnabled &&
-                    course.dayOfWeek in 1..7 &&
-                    uiState.displayedWeek in course.startWeek..course.endWeek &&
-                    when (course.oddEvenWeek) {
-                        1 -> uiState.displayedWeek % 2 == 1
-                        2 -> uiState.displayedWeek % 2 == 0
-                        else -> true
-                    }
+            val dayColumnWidth = remember(maxWidth) { (maxWidth - TIME_COLUMN_WIDTH) / 5 }
+            val contentWidth = remember(dayColumnWidth) { TIME_COLUMN_WIDTH + dayColumnWidth * 7 }
+            val gridHeight = remember { SECTION_HEIGHT * 12 }
+            val visibleCourses = remember(uiState.courseList, uiState.displayedWeek) {
+                uiState.courseList.filter { course ->
+                    course.isEnabled &&
+                        course.dayOfWeek in 1..7 &&
+                        uiState.displayedWeek in course.startWeek..course.endWeek &&
+                        when (course.oddEvenWeek) {
+                            1 -> uiState.displayedWeek % 2 == 1
+                            2 -> uiState.displayedWeek % 2 == 0
+                            else -> true
+                        }
+                }
             }
 
             Box(
@@ -419,15 +425,63 @@ private fun WeekHeader(
 
 @Composable
 private fun ScheduleGrid(dayColumnWidth: Dp) {
-    Column(modifier = Modifier.fillMaxSize()) {
-        for (section in 1..12) {
-            val (startTime, _) = sectionTimes[section]!!
-            Row(modifier = Modifier.height(SECTION_HEIGHT)) {
+    val gridLine = GridLine.copy(alpha = 0.65f)
+    val timeLine = GridLine.copy(alpha = 0.75f)
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .drawBehind {
+                val strokeWidth = 0.5.dp.toPx()
+                val timeColumnWidth = TIME_COLUMN_WIDTH.toPx()
+                val sectionHeight = SECTION_HEIGHT.toPx()
+                val columnWidth = dayColumnWidth.toPx()
+
+                for (section in 0..12) {
+                    val y = sectionHeight * section
+                    drawLine(
+                        color = gridLine,
+                        start = Offset(0f, y),
+                        end = Offset(size.width, y),
+                        strokeWidth = strokeWidth
+                    )
+                }
+
+                drawLine(
+                    color = timeLine,
+                    start = Offset(0f, 0f),
+                    end = Offset(0f, size.height),
+                    strokeWidth = strokeWidth
+                )
+                drawLine(
+                    color = timeLine,
+                    start = Offset(timeColumnWidth, 0f),
+                    end = Offset(timeColumnWidth, size.height),
+                    strokeWidth = strokeWidth
+                )
+
+                for (day in 1..7) {
+                    val x = timeColumnWidth + columnWidth * day
+                    drawLine(
+                        color = gridLine,
+                        start = Offset(x, 0f),
+                        end = Offset(x, size.height),
+                        strokeWidth = strokeWidth
+                    )
+                }
+            }
+    ) {
+        Column(
+            modifier = Modifier
+                .width(TIME_COLUMN_WIDTH)
+                .fillMaxHeight()
+        ) {
+            for (section in 1..12) {
+                val (startTime, _) = sectionTimes[section]!!
                 Box(
                     modifier = Modifier
                         .width(TIME_COLUMN_WIDTH)
-                        .fillMaxHeight()
-                        .border(0.5.dp, GridLine.copy(alpha = 0.75f)),
+                        .height(SECTION_HEIGHT),
                     contentAlignment = Alignment.TopCenter
                 ) {
                     Column(
@@ -446,14 +500,6 @@ private fun ScheduleGrid(dayColumnWidth: Dp) {
                             color = TextSecondary.copy(alpha = 0.75f)
                         )
                     }
-                }
-                for (day in 1..7) {
-                    Box(
-                        modifier = Modifier
-                            .width(dayColumnWidth)
-                            .fillMaxHeight()
-                            .border(0.5.dp, GridLine.copy(alpha = 0.65f))
-                    )
                 }
             }
         }

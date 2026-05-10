@@ -23,6 +23,9 @@ interface CourseDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertCourse(course: Course)
 
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertCourses(courses: List<Course>)
+
     @Update
     suspend fun updateCourse(course: Course)
 

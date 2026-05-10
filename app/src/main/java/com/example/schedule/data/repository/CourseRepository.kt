@@ -8,6 +8,7 @@ interface CourseRepository {
     fun getCoursesByDay(dayOfWeek: Int): Flow<List<Course>>
     suspend fun getCourseById(id: Int): Course?
     suspend fun insertCourse(course: Course)
+    suspend fun insertCourses(courses: List<Course>)
     suspend fun updateCourse(course: Course)
     suspend fun deleteCourse(course: Course)
     suspend fun deleteAll()

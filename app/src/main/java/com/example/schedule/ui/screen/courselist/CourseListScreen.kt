@@ -131,6 +131,13 @@ fun CourseListScreen(
     val groupedCourses = remember(filteredCourses) {
         filteredCourses.groupBy { it.dayOfWeek }.toSortedMap()
     }
+    val courseStats = remember(uiState.courseList, uiState.currentWeek) {
+        CourseStatsData(
+            totalCount = uiState.courseList.size,
+            enabledCount = uiState.courseList.count { it.isEnabled },
+            activeThisWeekCount = uiState.courseList.count { it.isEnabled && it.isActiveInWeek(uiState.currentWeek) }
+        )
+    }
 
     Scaffold(
         containerColor = AppBackground,
@@ -243,9 +250,7 @@ fun CourseListScreen(
                 .padding(horizontal = 18.dp)
         ) {
             CourseStats(
-                totalCount = uiState.courseList.size,
-                enabledCount = uiState.courseList.count { it.isEnabled },
-                activeThisWeekCount = uiState.courseList.count { it.isEnabled && it.isActiveInWeek(uiState.currentWeek) }
+                stats = courseStats
             )
 
             Spacer(modifier = Modifier.height(12.dp))
@@ -310,19 +315,23 @@ fun CourseListScreen(
 
 @Composable
 private fun CourseStats(
-    totalCount: Int,
-    enabledCount: Int,
-    activeThisWeekCount: Int
+    stats: CourseStatsData
 ) {
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        StatPill(title = "全部", value = totalCount.toString(), modifier = Modifier.weight(1f))
-        StatPill(title = "启用", value = enabledCount.toString(), modifier = Modifier.weight(1f))
-        StatPill(title = "本周", value = activeThisWeekCount.toString(), modifier = Modifier.weight(1f))
+        StatPill(title = "全部", value = stats.totalCount.toString(), modifier = Modifier.weight(1f))
+        StatPill(title = "启用", value = stats.enabledCount.toString(), modifier = Modifier.weight(1f))
+        StatPill(title = "本周", value = stats.activeThisWeekCount.toString(), modifier = Modifier.weight(1f))
     }
 }
+
+private data class CourseStatsData(
+    val totalCount: Int,
+    val enabledCount: Int,
+    val activeThisWeekCount: Int
+)
 
 @Composable
 private fun StatPill(

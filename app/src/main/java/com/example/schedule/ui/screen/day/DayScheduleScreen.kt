@@ -87,6 +87,10 @@ private val sectionTimes = mapOf(
     11 to ("19:00" to "19:45"),
     12 to ("19:50" to "20:35"),
 )
+private val sectionTimeFormatter = DateTimeFormatter.ofPattern("HH:mm")
+private val sectionTimeRanges = sectionTimes.mapValues { (_, range) ->
+    LocalTime.parse(range.first, sectionTimeFormatter) to LocalTime.parse(range.second, sectionTimeFormatter)
+}
 
 private enum class CourseStatus {
     IN_PROGRESS,
@@ -447,10 +451,8 @@ private fun classifyCourses(courses: List<Course>, now: LocalTime): Triple<List<
     val completed = mutableListOf<Course>()
 
     courses.sortedBy { it.startSection }.forEach { course ->
-        val (startStr, _) = sectionTimes[course.startSection] ?: return@forEach
-        val (_, endStr) = sectionTimes[course.endSection] ?: return@forEach
-        val start = LocalTime.parse(startStr, DateTimeFormatter.ofPattern("HH:mm"))
-        val end = LocalTime.parse(endStr, DateTimeFormatter.ofPattern("HH:mm"))
+        val (start, _) = sectionTimeRanges[course.startSection] ?: return@forEach
+        val (_, end) = sectionTimeRanges[course.endSection] ?: return@forEach
 
         when {
             now.isAfter(end) -> completed.add(course)

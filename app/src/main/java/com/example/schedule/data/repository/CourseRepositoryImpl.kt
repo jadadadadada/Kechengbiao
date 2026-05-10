@@ -18,6 +18,12 @@ class CourseRepositoryImpl(private val courseDao: CourseDao) : CourseRepository 
         withContext(Dispatchers.IO) { courseDao.insertCourse(course) }
     }
 
+    override suspend fun insertCourses(courses: List<Course>) {
+        withContext(Dispatchers.IO) {
+            if (courses.isNotEmpty()) courseDao.insertCourses(courses)
+        }
+    }
+
     override suspend fun updateCourse(course: Course) {
         withContext(Dispatchers.IO) { courseDao.updateCourse(course) }
     }

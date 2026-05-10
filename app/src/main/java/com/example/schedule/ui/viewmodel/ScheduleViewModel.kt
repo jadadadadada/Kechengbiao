@@ -7,12 +7,15 @@ import com.example.schedule.data.repository.CourseRepository
 import com.example.schedule.data.repository.SemesterRepository
 import com.example.schedule.data.repository.SemesterSettings
 import com.example.schedule.util.ReminderScheduler
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.time.LocalDate
 import java.time.temporal.ChronoUnit
 
@@ -36,6 +39,9 @@ class ScheduleViewModel(
 
     private val _uiState = MutableStateFlow(ScheduleUiState())
     val uiState: StateFlow<ScheduleUiState> = _uiState.asStateFlow()
+
+    private var reminderSyncJob: Job? = null
+    private var lastReminderSignature: ReminderSignature? = null
 
     init {
         observeSemesterSettings()
@@ -170,7 +176,7 @@ class ScheduleViewModel(
             )
         )
 
-        samples.forEach { repository.insertCourse(it) }
+        repository.insertCourses(samples)
     }
 
     private fun loadCoursesObservable() {
@@ -204,14 +210,22 @@ class ScheduleViewModel(
 
     fun clearAllCourses() {
         viewModelScope.launch {
-            reminderScheduler.cancelAll()
+            reminderSyncJob?.cancel()
+            lastReminderSignature = null
+            withContext(Dispatchers.IO) {
+                reminderScheduler.cancelAll()
+            }
             repository.deleteAll()
         }
     }
 
     fun resetSampleCourses() {
         viewModelScope.launch {
-            reminderScheduler.cancelAll()
+            reminderSyncJob?.cancel()
+            lastReminderSignature = null
+            withContext(Dispatchers.IO) {
+                reminderScheduler.cancelAll()
+            }
             repository.deleteAll()
             insertSampleCourses()
             semesterRepository.markSampleCoursesInitialized()
@@ -220,7 +234,7 @@ class ScheduleViewModel(
 
     fun importCourses(courses: List<Course>) {
         viewModelScope.launch {
-            courses.forEach { repository.insertCourse(it) }
+            repository.insertCourses(courses)
             semesterRepository.markSampleCoursesInitialized()
         }
     }
@@ -251,11 +265,22 @@ class ScheduleViewModel(
 
     private fun syncReminders(courses: List<Course> = _uiState.value.courseList) {
         val state = _uiState.value
-        reminderScheduler.scheduleAll(
+        val signature = ReminderSignature.from(
             courses = courses,
             semesterStartDate = state.semesterStartDate,
             totalWeeks = state.totalWeeks
         )
+        if (signature == lastReminderSignature) return
+
+        reminderSyncJob?.cancel()
+        reminderSyncJob = viewModelScope.launch(Dispatchers.IO) {
+            reminderScheduler.scheduleAll(
+                courses = courses,
+                semesterStartDate = state.semesterStartDate,
+                totalWeeks = state.totalWeeks
+            )
+            lastReminderSignature = signature
+        }
     }
 
     fun selectDisplayedWeek(week: Int) {
@@ -277,3 +302,54 @@ class ScheduleViewModel(
         }
     }
 }
+
+private data class ReminderSignature(
+    val semesterStartDate: LocalDate,
+    val totalWeeks: Int,
+    val courses: List<CourseReminderSignature>
+) {
+    companion object {
+        fun from(
+            courses: List<Course>,
+            semesterStartDate: LocalDate,
+            totalWeeks: Int
+        ): ReminderSignature {
+            return ReminderSignature(
+                semesterStartDate = semesterStartDate,
+                totalWeeks = totalWeeks,
+                courses = courses
+                    .asSequence()
+                    .filter { it.isEnabled && it.reminderMinutes > 0 }
+                    .sortedBy { it.id }
+                    .map { course ->
+                        CourseReminderSignature(
+                            id = course.id,
+                            name = course.name,
+                            teacher = course.teacher,
+                            classroom = course.classroom,
+                            dayOfWeek = course.dayOfWeek,
+                            startSection = course.startSection,
+                            startWeek = course.startWeek,
+                            endWeek = course.endWeek,
+                            oddEvenWeek = course.oddEvenWeek,
+                            reminderMinutes = course.reminderMinutes
+                        )
+                    }
+                    .toList()
+            )
+        }
+    }
+}
+
+private data class CourseReminderSignature(
+    val id: Int,
+    val name: String,
+    val teacher: String,
+    val classroom: String,
+    val dayOfWeek: Int,
+    val startSection: Int,
+    val startWeek: Int,
+    val endWeek: Int,
+    val oddEvenWeek: Int,
+    val reminderMinutes: Int
+)

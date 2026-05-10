@@ -1,8 +1,10 @@
 package com.example.schedule.data.db
 
+import androidx.compose.runtime.Immutable
 import androidx.room.Entity
 import androidx.room.PrimaryKey
 
+@Immutable
 @Entity(tableName = "courses")
 data class Course(
     @PrimaryKey(autoGenerate = true)
