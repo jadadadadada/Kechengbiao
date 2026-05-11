@@ -1,6 +1,9 @@
 package com.example.schedule.ui.screen.eduimport
 
 import android.annotation.SuppressLint
+import android.os.Message
+import android.view.ViewGroup
+import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
@@ -92,6 +95,7 @@ fun EduImportScreen(
         }
         focusManager.clearFocus()
         loadMessage = null
+        importError = null
         urlText = normalizedUrl
         webView?.loadUrl(normalizedUrl) ?: run {
             importError = "网页还没有准备好"
@@ -133,7 +137,7 @@ fun EduImportScreen(
                                 color = TextPrimary
                             )
                             Text(
-                                text = "请输入 URL 后打开",
+                                text = "自动打开，登录后进入全学期课表",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = TextSecondary
                             )
@@ -148,6 +152,9 @@ fun EduImportScreen(
                                 val currentWebView = webView
                                 if (currentWebView == null) {
                                     importError = "网页还没有准备好"
+                                } else if (currentWebView.url.isNullOrBlank() || currentWebView.url == "about:blank") {
+                                    loadMessage = "正在打开教务系统，请登录后再识别"
+                                    openCurrentUrl()
                                 } else {
                                     currentWebView.evaluateJavascript(
                                         EDU_EXTRACT_SCRIPT
@@ -246,6 +253,8 @@ fun EduImportScreen(
                         settings.mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
                         settings.javaScriptCanOpenWindowsAutomatically = true
                         settings.setSupportMultipleWindows(true)
+                        settings.loadsImagesAutomatically = true
+                        settings.blockNetworkImage = false
                         settings.loadWithOverviewMode = false
                         settings.useWideViewPort = false
                         settings.setSupportZoom(true)
@@ -253,6 +262,48 @@ fun EduImportScreen(
                         settings.displayZoomControls = false
                         CookieManager.getInstance().setAcceptCookie(true)
                         CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
+                        webChromeClient = object : WebChromeClient() {
+                            override fun onCreateWindow(
+                                view: WebView?,
+                                isDialog: Boolean,
+                                isUserGesture: Boolean,
+                                resultMsg: Message?
+                            ): Boolean {
+                                val parent = view ?: return false
+                                val transport = resultMsg?.obj as? WebView.WebViewTransport ?: return false
+                                val childWebView = WebView(parent.context).apply {
+                                    settings.javaScriptEnabled = true
+                                    settings.domStorageEnabled = true
+                                    settings.mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
+                                    settings.javaScriptCanOpenWindowsAutomatically = true
+                                    settings.setSupportMultipleWindows(false)
+                                    CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
+                                    webViewClient = object : WebViewClient() {
+                                        override fun shouldOverrideUrlLoading(
+                                            childView: WebView?,
+                                            request: WebResourceRequest?
+                                        ): Boolean {
+                                            val targetUrl = request?.url?.toString().orEmpty()
+                                            if (targetUrl.isNotBlank()) {
+                                                parent.loadUrl(targetUrl)
+                                            }
+                                            return true
+                                        }
+
+                                        override fun onPageFinished(childView: WebView?, childUrl: String?) {
+                                            if (!childUrl.isNullOrBlank() && childUrl != "about:blank") {
+                                                parent.loadUrl(childUrl)
+                                            }
+                                            (childView?.parent as? ViewGroup)?.removeView(childView)
+                                            childView?.destroy()
+                                        }
+                                    }
+                                }
+                                transport.webView = childWebView
+                                resultMsg.sendToTarget()
+                                return true
+                            }
+                        }
                         webViewClient = object : WebViewClient() {
                             override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
                                 isLoading = true
@@ -262,6 +313,9 @@ fun EduImportScreen(
 
                             override fun onPageFinished(view: WebView?, url: String?) {
                                 isLoading = false
+                                if (!url.isNullOrBlank() && url != "about:blank") {
+                                    urlText = url
+                                }
                                 view?.settings?.applyEduViewport(url.orEmpty())
                                 view?.evaluateJavascript(
                                     if (url.orEmpty().contains("/jsxsd/framework/xsMainV")) {
@@ -284,8 +338,8 @@ fun EduImportScreen(
                                 }
                             }
                         }
-                        loadUrl("about:blank")
                         webView = this
+                        loadUrl(normalizeUrl(urlText).ifBlank { EDU_SYSTEM_URL })
                     }
                 }
             )
@@ -406,7 +460,7 @@ private fun normalizeUrl(input: String): String {
 }
 
 private fun WebSettings.applyEduViewport(url: String) {
-    val isMainPage = url.contains("/jsxsd/framework/xsMainV")
+    val isMainPage = url.contains("/jsxsd/framework")
     loadWithOverviewMode = isMainPage
     useWideViewPort = isMainPage
     textZoom = 100
@@ -415,9 +469,18 @@ private fun WebSettings.applyEduViewport(url: String) {
 private val EDU_EXTRACT_SCRIPT = """
 (function() {
   var COURSE_MENU_ID = 'NEW_XSD_PYGL_WDKB_XQLLKB';
+  var COURSE_TIMETABLE_PATH = '/jsxsd/xskb/xskb_list.do';
 
   function clean(text) {
     return (text || '').replace(/\s+/g, ' ').trim();
+  }
+
+  function absoluteUrl(path) {
+    try {
+      return new URL(path, location.origin).href;
+    } catch (error) {
+      return 'https://jw.gxstnu.edu.cn' + path;
+    }
   }
 
   function safeDocument(win) {
@@ -446,27 +509,142 @@ private val EDU_EXTRACT_SCRIPT = """
     return null;
   }
 
+  function findTimetableMenu(doc) {
+    if (!doc) return null;
+    var menu = doc.querySelector('[data-id="' + COURSE_MENU_ID + '"]');
+    if (menu) return menu;
+
+    var menus = doc.querySelectorAll('[data-src], .menu-three');
+    for (var i = 0; i < menus.length; i++) {
+      var item = menus[i];
+      var src = item.getAttribute('data-src') || '';
+      var title = clean(item.textContent);
+      if (src.indexOf('/xskb/xskb_list.do') !== -1 || title.indexOf('学期理论课表') !== -1) {
+        return item;
+      }
+    }
+    return null;
+  }
+
   function openTimetableIfPossible() {
-    var menu = document.querySelector('[data-id="' + COURSE_MENU_ID + '"]');
-    if (!menu) return false;
+    var menu = findTimetableMenu(document);
+    var targetSrc = (menu && menu.getAttribute('data-src')) || COURSE_TIMETABLE_PATH;
+
     try {
-      if (typeof window.createPage === 'function' && window.jQuery) {
+      if (menu && typeof window.createPage === 'function' && window.jQuery) {
         window.createPage(window.jQuery(menu));
-      } else {
+      } else if (menu) {
         menu.click();
+      }
+      var iframe = document.querySelector('.main-right-content iframe[id="' + COURSE_MENU_ID + '"]') ||
+        document.querySelector('iframe[src*="/xskb/xskb_list.do"]');
+      if (iframe) {
+        iframe.src = targetSrc;
+        iframe.style.display = 'block';
+      } else {
+        location.href = absoluteUrl(targetSrc);
       }
       return true;
     } catch (error) {
       try {
-        menu.click();
+        location.href = absoluteUrl(targetSrc);
         return true;
       } catch (ignored) {}
     }
     return false;
   }
 
+  function openTimetableDirectly() {
+    try {
+      location.href = absoluteUrl(COURSE_TIMETABLE_PATH);
+      return true;
+    } catch (error) {
+      return openTimetableIfPossible();
+    }
+  }
+
   function courseCodeFrom(text) {
     return clean(text).replace(/^;?\s*课程号[:：]?/, '');
+  }
+
+  function buildDetailFromLines(item) {
+    var lines = (item.innerText || '')
+      .split(/\n+/)
+      .map(function(line) { return clean(line); })
+      .filter(Boolean);
+    var teacherLine = lines.find(function(line) { return /^教师[:：]/.test(line); }) || '';
+    var sectionLine = lines.find(function(line) { return /\d{1,2}\s*[~\-～]\s*\d{1,2}\s*小?节|\d{1,2}\s*小?节/.test(line); }) || '';
+    var weekLine = lines.find(function(line) { return /\[[^\]]+周\]\s*星期[一二三四五六日天]/.test(line); }) || '';
+    var teacher = teacherLine.replace(/^教师[:：]\s*/, '');
+    var sectionMatch = sectionLine.match(/(\d{1,2})\s*[~\-～]\s*(\d{1,2})\s*小?节/) || sectionLine.match(/(\d{1,2})\s*小?节/);
+    var weekMatch = weekLine.match(/\[([^\]]+周)\]\s*星期[一二三四五六日天]/);
+    var classroom = lines
+      .filter(function(line) {
+        return line !== teacherLine &&
+          line !== sectionLine &&
+          line !== weekLine &&
+          !/^课程号[:：]?/.test(line);
+      })
+      .pop() || '';
+
+    if (!teacher || !sectionMatch || !weekMatch) return '';
+    var startSection = parseInt(sectionMatch[1], 10);
+    var endSection = parseInt(sectionMatch[2] || sectionMatch[1], 10);
+    return '老师:' + teacher + ';时间:' + weekMatch[1] + '[' + startSection + '-' + endSection + '节];地点:' + classroom;
+  }
+
+  function courseItemsIn(root) {
+    var seen = [];
+    var items = root.querySelectorAll('li.courselists-item, .courselists-item');
+    for (var i = 0; i < items.length; i++) {
+      if (seen.indexOf(items[i]) === -1) seen.push(items[i]);
+    }
+    return seen;
+  }
+
+  function collectColumnCenters(table) {
+    var centers = [];
+    var cells = table.querySelectorAll('td[name="kbDataTd"], td.qz-weeklyTable-td:not(.qz-weeklyTable-label):not(.qz-weeklyTable-detailtext)');
+    for (var i = 0; i < cells.length; i++) {
+      var rect = cells[i].getBoundingClientRect();
+      if (rect.width <= 0) continue;
+      centers.push(rect.left + rect.width / 2);
+    }
+    centers.sort(function(a, b) { return a - b; });
+
+    var clusters = [];
+    for (var centerIndex = 0; centerIndex < centers.length; centerIndex++) {
+      var center = centers[centerIndex];
+      var last = clusters[clusters.length - 1];
+      if (!last || Math.abs(last.value - center) > 12) {
+        clusters.push({ value: center, count: 1 });
+      } else {
+        last.value = (last.value * last.count + center) / (last.count + 1);
+        last.count++;
+      }
+    }
+
+    return clusters
+      .sort(function(a, b) { return b.count - a.count; })
+      .slice(0, 7)
+      .map(function(cluster) { return cluster.value; })
+      .sort(function(a, b) { return a - b; });
+  }
+
+  function dayFromCell(td, columnCenters) {
+    if (columnCenters.length < 7) return 0;
+    var rect = td.getBoundingClientRect();
+    var center = rect.left + rect.width / 2;
+    var nearest = 0;
+    var nearestDistance = Infinity;
+    for (var i = 0; i < columnCenters.length; i++) {
+      var distance = Math.abs(columnCenters[i] - center);
+      if (distance < nearestDistance) {
+        nearest = i;
+        nearestDistance = distance;
+      }
+    }
+    return nearest + 1;
   }
 
   function dayNumber(text) {
@@ -475,9 +653,15 @@ private val EDU_EXTRACT_SCRIPT = """
     return match ? days[match[1]] : 0;
   }
 
+  function isCurrentWeekTable(table) {
+    var firstHeader = clean(table.querySelector('thead th') ? table.querySelector('thead th').textContent : '');
+    var headerText = clean(table.querySelector('thead') ? table.querySelector('thead').textContent : '');
+    return firstHeader.indexOf('节次') !== -1 && /\d{2}-\d{2}/.test(headerText);
+  }
+
   function parseCompactCourseItems(doc) {
     var result = [];
-    var items = doc.querySelectorAll('table.qz-weeklyTable li.courselists-item');
+    var items = doc.querySelectorAll('table.qz-weeklyTable li.courselists-item, table.qz-weeklyTable .courselists-item');
     for (var i = 0; i < items.length; i++) {
       var item = items[i];
       var titleElement = item.querySelector('.qz-hasCourse-title');
@@ -533,49 +717,44 @@ private val EDU_EXTRACT_SCRIPT = """
     });
   }
 
-  var rows = table.querySelectorAll('tbody tr');
-  var occupied = [0, 0, 0, 0, 0, 0, 0];
-  var courses = [];
-
-  for (var rowIndex = 0; rowIndex < rows.length; rowIndex++) {
-    var cells = rows[rowIndex].querySelectorAll('td[name="kbDataTd"]');
-    var col = 0;
-
-    for (var cellIndex = 0; cellIndex < cells.length; cellIndex++) {
-      while (col < 7 && occupied[col] > 0) col++;
-      if (col >= 7) break;
-
-      var td = cells[cellIndex];
-      var dayOfWeek = col + 1;
-      var rowSpan = parseInt(td.getAttribute('rowspan') || '1', 10);
-      if (!rowSpan || rowSpan < 1) rowSpan = 1;
-
-      var items = td.querySelectorAll('ul[name="kbdataUl"] > li.courselists-item');
-      for (var itemIndex = 0; itemIndex < items.length; itemIndex++) {
-        var item = items[itemIndex];
-        var titleElement = item.querySelector('.qz-hasCourse-title');
-        var detailElement = item.querySelector('.qz-hasCourse-abbrinfo');
-        var codeElement = item.querySelector('span[name="kchSpan"]');
-        var name = clean(titleElement ? titleElement.textContent : '');
-        var detail = clean(detailElement ? detailElement.textContent : '');
-
-        if (name && detail) {
-          courses.push({
-            rowNumber: rowIndex + 1,
-            dayOfWeek: dayOfWeek,
-            name: name,
-            detail: detail,
-            courseCode: courseCodeFrom(codeElement ? codeElement.textContent : '')
-          });
-        }
-      }
-
-      occupied[col] = rowSpan;
-      col++;
+  if (isCurrentWeekTable(table)) {
+    if (openTimetableDirectly()) {
+      return JSON.stringify({
+        status: 'opening',
+        message: '当前是本周课表，正在直接打开学期理论课表；请等待加载完成后再次点击识别',
+        courses: []
+      });
     }
+  }
 
-    for (var occupiedIndex = 0; occupiedIndex < 7; occupiedIndex++) {
-      if (occupied[occupiedIndex] > 0) occupied[occupiedIndex]--;
+  var courses = [];
+  var columnCenters = collectColumnCenters(table);
+  var dataCells = table.querySelectorAll('td[name="kbDataTd"], td.qz-weeklyTable-td:not(.qz-weeklyTable-label):not(.qz-weeklyTable-detailtext)');
+  var currentWeekOnly = isCurrentWeekTable(table);
+
+  for (var cellIndex = 0; cellIndex < dataCells.length; cellIndex++) {
+    var td = dataCells[cellIndex];
+    var dayOfWeek = dayFromCell(td, columnCenters);
+    if (!dayOfWeek) continue;
+
+    var items = courseItemsIn(td);
+    for (var itemIndex = 0; itemIndex < items.length; itemIndex++) {
+      var item = items[itemIndex];
+      var titleElement = item.querySelector('.qz-hasCourse-title');
+      var detailElement = item.querySelector('.qz-hasCourse-abbrinfo');
+      var codeElement = item.querySelector('span[name="kchSpan"]');
+      var name = clean(titleElement ? titleElement.textContent : '');
+      var detail = clean(detailElement ? detailElement.textContent : '') || buildDetailFromLines(item);
+
+      if (name && detail) {
+        courses.push({
+          rowNumber: cellIndex + 1,
+          dayOfWeek: dayOfWeek,
+          name: name,
+          detail: detail,
+          courseCode: courseCodeFrom(codeElement ? codeElement.textContent : '')
+        });
+      }
     }
   }
 
@@ -591,6 +770,14 @@ private val EDU_EXTRACT_SCRIPT = """
     });
   }
 
+  if (currentWeekOnly) {
+    return JSON.stringify({
+      status: 'not_found',
+      message: '当前页面是“本周课表”，页面源码里只有 ' + courses.length + ' 条本周课程。请在教务系统进入“学期理论课表/全学期课表”后再识别，否则会漏掉其它周次课程。',
+      courses: []
+    });
+  }
+
   return JSON.stringify({
     status: 'ready',
     message: '识别到 ' + courses.length + ' 条课程明细',
@@ -601,7 +788,7 @@ private val EDU_EXTRACT_SCRIPT = """
 
 private val EDU_MAIN_PAGE_FIX_SCRIPT = """
 (function() {
-  if (!location.pathname.includes('/jsxsd/framework/xsMainV')) return;
+  if (!location.pathname.includes('/jsxsd/framework')) return;
 
   var viewport = document.querySelector('meta[name="viewport"]');
   if (!viewport) {
